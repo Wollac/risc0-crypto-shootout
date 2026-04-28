@@ -17,17 +17,19 @@ static CYCLE_RE: LazyLock<Regex> =
 /// The reference implementation; counterpart libraries are paired against this.
 const REFERENCE: &str = "risc0-crypto";
 
-/// Embedded at compile time so we can report the exact `risc0-crypto` git rev
-/// that produced these numbers.
-const GUEST_CARGO_TOML: &str = include_str!("../guest/Cargo.toml");
+/// Embedded at compile time so we can report the resolved `risc0-crypto` git rev.
+/// `Cargo.lock` is canonical (cargo-generated, not user-formatted) so the format is stable.
+const GUEST_CARGO_LOCK: &str = include_str!("../guest/Cargo.lock");
 
 /// Extract `(repo_url, rev)` for the `risc0-crypto` dependency.
 fn risc0_crypto_source() -> Option<(&'static str, &'static str)> {
     static RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"risc0-crypto\s*=\s*\{[^}]*git\s*=\s*"([^"]+)"[^}]*rev\s*=\s*"([^"]+)""#)
-            .unwrap()
+        Regex::new(
+            r##"name = "risc0-crypto"\nversion = "[^"]*"\nsource = "git\+([^?]+)\?rev=([^#"]+)#"##,
+        )
+        .unwrap()
     });
-    let caps = RE.captures(GUEST_CARGO_TOML)?;
+    let caps = RE.captures(GUEST_CARGO_LOCK)?;
     Some((caps.get(1)?.as_str(), caps.get(2)?.as_str()))
 }
 
@@ -67,8 +69,9 @@ fn main() -> anyhow::Result<()> {
 
 /// Parse `--<name> <value>` from command-line arguments.
 fn parse_flag(name: &str) -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
+    let mut args = std::env::args().skip_while(|a| a != name);
+    args.next()?;
+    args.next()
 }
 
 /// Splits a topic like `"eip2537/msm/128*10"` into `("eip2537/msm/128", 10)`.
@@ -143,22 +146,19 @@ fn write_json(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
 }
 
 /// Write a head-to-head markdown comparison: risc0-crypto vs counterpart per benchmark.
-///
-/// Topics are split on the last `/` into a `benchmark` prefix and an `impl` suffix.
-/// Rows where the same benchmark has both `risc0-crypto` and a counterpart are paired up;
-/// unpaired rows are skipped (e.g. `overhead/log`).
 fn write_markdown(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
-    // Map benchmark -> (impl -> cycles), preserving first-seen benchmark order.
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, HashMap<String, u64>> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    let mut groups: HashMap<&str, Vec<(&str, u64)>> = HashMap::new();
 
     for r in results {
         let Some((benchmark, impl_name)) = r.name.rsplit_once('/') else { continue };
-        let entry = groups.entry(benchmark.to_string()).or_insert_with(|| {
-            order.push(benchmark.to_string());
-            HashMap::new()
-        });
-        entry.insert(impl_name.to_string(), r.value);
+        groups
+            .entry(benchmark)
+            .or_insert_with(|| {
+                order.push(benchmark);
+                Vec::new()
+            })
+            .push((impl_name, r.value));
     }
 
     let mut md = String::new();
@@ -167,10 +167,8 @@ fn write_markdown(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
 
     for benchmark in &order {
         let entries = &groups[benchmark];
-        let Some(&ours) = entries.get(REFERENCE) else { continue };
-        let Some((lib, &theirs)) = entries.iter().find(|(k, _)| k.as_str() != REFERENCE) else {
-            continue;
-        };
+        let Some(&(_, ours)) = entries.iter().find(|(k, _)| *k == REFERENCE) else { continue };
+        let Some(&(lib, theirs)) = entries.iter().find(|(k, _)| *k != REFERENCE) else { continue };
         let ratio = theirs as f64 / ours as f64;
         writeln!(
             md,
@@ -181,7 +179,7 @@ fn write_markdown(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
     }
 
     if let Some((repo, rev)) = risc0_crypto_source() {
-        let short = &rev[..rev.len().min(8)];
+        let short = rev.get(..8).unwrap_or(rev);
         let repo_trimmed = repo.trim_end_matches(".git");
         writeln!(md)?;
         writeln!(md, "_risc0-crypto rev [`{short}`]({repo_trimmed}/commit/{rev})_")?;

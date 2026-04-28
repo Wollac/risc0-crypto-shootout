@@ -9,3 +9,7 @@ target/
 
 # Claude Code
 .claude/
+
+# Local benchmark output
+results.json
+results.md
