@@ -13,7 +13,7 @@ interface against both implementations and asserts they agree on the result.
 | `eip2537/add`    | BLS12-381 G1      | `blst`                 |
 | `eip2537/msm`    | BLS12-381 G1      | `blst`                 |
 | `modexp/256bit`  | EIP-198 modexp    | `aurora-engine-modexp` |
-| `sha256/256B`    | risc0-zkp SHA-256 | `sha2`                 |
+| `sha256/64B`     | risc0-zkp SHA-256 | `sha2`                 |
 
 The counterparts are pulled from the [risc0 RustCrypto/blst forks][forks] via
 `[patch.crates-io]`, so the numbers reflect each library's best-tuned zkVM build.

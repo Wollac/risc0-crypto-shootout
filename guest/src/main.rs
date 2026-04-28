@@ -751,7 +751,15 @@ fn bench_modexp() {
 //
 // the timed region includes all parsing.
 
-const SHA256_INPUT_LEN: usize = 256;
+// real 64-byte input from a recent mainnet sha256 precompile call
+// (tx 0xa432b9491df7f18ad11ff5b9b6f843d184b3e1d395df738e5cd4331e11e06177).
+// 64 bytes is by far the most common length on mainnet (~75x the runner-up,
+// per the 0x02 trace distribution): it covers the typical "hash two 32-byte
+// values" pattern (Merkle steps, hash chains, etc.).
+const SHA256_INPUT: [u8; 64] = hex!(
+    "e19cdf9a2c41c77f70c48eab0b237fa254343f846cc40f8824db7be77e52aede"
+    "010000000000000000000000410a22b5c662b9e3a03dca5672c06ac8f6506b36"
+);
 
 /// SHA-256 via risc0-crypto / risc0-zkp (revm-precompile interface).
 fn sha256_risc0(input: &[u8]) -> [u8; 32] {
@@ -767,21 +775,15 @@ fn sha256_sha2(input: &[u8]) -> [u8; 32] {
 }
 
 fn bench_sha256() {
-    // deterministic 256-byte input - representative of multi-block hashes.
-    let mut input = [0u8; SHA256_INPUT_LEN];
-    for (i, b) in input.iter_mut().enumerate() {
-        *b = (i.wrapping_mul(0x9e).wrapping_add(0x37)) as u8;
-    }
-
-    env::log("cycle-start: sha256/256B/risc0-crypto");
-    let a = sha256_risc0(black_box(&input));
+    env::log("cycle-start: sha256/64B/risc0-crypto");
+    let a = sha256_risc0(black_box(&SHA256_INPUT));
     black_box(&a);
-    env::log("cycle-end: sha256/256B/risc0-crypto");
+    env::log("cycle-end: sha256/64B/risc0-crypto");
 
-    env::log("cycle-start: sha256/256B/sha2");
-    let b = sha256_sha2(black_box(&input));
+    env::log("cycle-start: sha256/64B/sha2");
+    let b = sha256_sha2(black_box(&SHA256_INPUT));
     black_box(&b);
-    env::log("cycle-end: sha256/256B/sha2");
+    env::log("cycle-end: sha256/64B/sha2");
 
     assert_eq!(a, b, "sha256 implementations disagree");
 }
