@@ -11,13 +11,19 @@ lto = "fat"
 
 [dependencies]
 risc0-crypto = { git = "https://github.com/boundless-xyz/risc0-crypto.git", rev = "4042fe8933cd71b36e0969c6e7d52c994cc43f86" }
+risc0-zkp = { version = "3.0.4", default-features = false }
 risc0-zkvm = "3.0"
 k256 = { version = "=0.13.4", default-features = false, features = ["ecdsa"] }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "=0.10.9", default-features = false }
 substrate-bn = { version = "=0.6.0", default-features = false }
 blst = { version = "=0.3.16", default-features = false }
+aurora-engine-modexp = { version = "1.2", default-features = false }
+hex-literal = "1.0"
 
 [patch.crates-io]
 k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1" }
+p256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "p256/v0.13.2-risczero.1" }
 crypto-bigint = { git = "https://github.com/risc0/RustCrypto-crypto-bigint", tag = "v0.5.5-risczero.0" }
 sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }
 substrate-bn = { git = "https://github.com/risc0/paritytech-bn", tag = "v0.6.0-risczero.0" }

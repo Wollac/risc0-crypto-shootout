@@ -3,20 +3,20 @@
 extern crate alloc;
 
 use core::hint::black_box;
+use hex_literal::hex;
 use risc0_crypto::{BigInt, fp};
 use risc0_zkvm::guest::env;
 
 risc0_zkvm::guest::entry!(main);
 
 fn main() {
-    // measure logging overhead (empty span)
-    env::log("cycle-start: overhead/log");
-    env::log("cycle-end: overhead/log");
-
     bench_ecrecover();
+    bench_p256verify();
     bench_eip196();
     bench_eip2537();
     bench_eip2537_msm();
+    bench_modexp();
+    bench_sha256();
 }
 
 // -- ecrecover comparison: risc0-crypto vs k256 --
@@ -34,11 +34,7 @@ fn ecrecover_setup() -> ([u8; 64], u8, [u8; 32]) {
         fp!("0xc9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
     let k: secp256k1::Fr =
         fp!("0xa6e3c57dd01abe90086538398355dd4c3b17aa873382b0f24d6129493d8aad60");
-    let msg: [u8; 32] = [
-        0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
-        0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
-        0x0b, 0x0c,
-    ];
+    let msg = hex!("deadbeef00112233445566778899aabbccddeeff0102030405060708090a0b0c");
 
     let rsig =
         RecoverableSignature::<secp256k1::Config, 8>::sign(&d, &k, &msg).unwrap().normalized_s();
@@ -567,4 +563,227 @@ fn bench_eip2537_msm() {
 
         assert_eq!(r1.unwrap(), r2.unwrap(), "G1 MSM k={k} implementations disagree");
     }
+}
+
+// -- EIP-7951 P256VERIFY: risc0-crypto vs p256 --
+//
+// both implementations use the revm-precompile Crypto interface:
+//   fn secp256r1_verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool
+//
+// the timed region includes all parsing from raw bytes.
+
+/// Generate a valid P-256 signature in raw-byte form (not timed).
+fn p256_setup() -> ([u8; 32], [u8; 64], [u8; 64]) {
+    use risc0_crypto::{curves::secp256r1, ecdsa::Signature};
+
+    let d: secp256r1::Fr =
+        fp!("0xc9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
+    let k: secp256r1::Fr =
+        fp!("0xa6e3c57dd01abe90086538398355dd4c3b17aa873382b0f24d6129493d8aad60");
+    let msg = hex!("deadbeef00112233445566778899aabbccddeeff0102030405060708090a0b0c");
+
+    // sign and normalize-s so the p256 crate accepts the same encoding.
+    let sig = Signature::<secp256r1::Config, 8>::sign(&d, &k, &msg).unwrap().normalized_s();
+    let mut sig_bytes = [0u8; 64];
+    sig.r().as_bigint().write_be_bytes(&mut sig_bytes[..32]);
+    sig.s().as_bigint().write_be_bytes(&mut sig_bytes[32..]);
+
+    // pk = [d]G in raw (x, y) form (uncompressed without 0x04 prefix).
+    let pk_point = &secp256r1::Affine::GENERATOR * &d;
+    let (px, py) = pk_point.xy().unwrap();
+    let mut pk_bytes = [0u8; 64];
+    px.as_bigint().write_be_bytes(&mut pk_bytes[..32]);
+    py.as_bigint().write_be_bytes(&mut pk_bytes[32..]);
+
+    (msg, sig_bytes, pk_bytes)
+}
+
+/// P-256 signature verification via risc0-crypto (revm-precompile interface).
+fn p256_verify_risc0(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool {
+    use risc0_crypto::{AffinePoint, curves::secp256r1, ecdsa::Signature};
+
+    let inner = || -> Option<bool> {
+        let r = secp256r1::Fr::from_bigint(BigInt::<8>::from_be_bytes(&sig[..32]))?;
+        let s = secp256r1::Fr::from_bigint(BigInt::<8>::from_be_bytes(&sig[32..]))?;
+        let signature = Signature::<secp256r1::Config, 8>::new(r, s)?;
+
+        let x = secp256r1::Fq::from_bigint(BigInt::<8>::from_be_bytes(&pk[..32]))?;
+        let y = secp256r1::Fq::from_bigint(BigInt::<8>::from_be_bytes(&pk[32..]))?;
+        let pubkey = AffinePoint::<secp256r1::Config, 8>::new(x, y)?;
+
+        Some(signature.verify(&pubkey, msg))
+    };
+    inner().unwrap_or(false)
+}
+
+/// P-256 signature verification via the p256 crate (revm-precompile interface),
+/// matching revm's default `secp256r1::verify_signature`.
+fn p256_verify_p256(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool {
+    use p256::{
+        EncodedPoint,
+        ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
+    };
+
+    let inner = || -> Option<()> {
+        let signature = Signature::from_slice(sig).ok()?;
+        let encoded_point = EncodedPoint::from_untagged_bytes(pk.into());
+        let public_key = VerifyingKey::from_encoded_point(&encoded_point).ok()?;
+        public_key.verify_prehash(msg, &signature).ok()
+    };
+    inner().is_some()
+}
+
+fn bench_p256verify() {
+    let (msg, sig, pk) = p256_setup();
+
+    env::log("cycle-start: p256verify/risc0-crypto");
+    let a = p256_verify_risc0(black_box(&msg), black_box(&sig), black_box(&pk));
+    black_box(&a);
+    env::log("cycle-end: p256verify/risc0-crypto");
+
+    env::log("cycle-start: p256verify/p256");
+    let b = p256_verify_p256(black_box(&msg), black_box(&sig), black_box(&pk));
+    black_box(&b);
+    env::log("cycle-end: p256verify/p256");
+
+    assert!(a, "risc0-crypto rejected a valid signature");
+    assert!(b, "p256 rejected a valid signature");
+}
+
+// -- EIP-198 MODEXP: risc0-crypto vs aurora-engine-modexp (revm default) --
+//
+// both implementations use the revm-precompile Crypto interface:
+//   fn modexp(base: &[u8], exp: &[u8], modulus: &[u8]) -> Vec<u8>
+//
+// aurora-engine-modexp is what revm's `DefaultCrypto::modexp` calls when the
+// `gmp` feature is off - i.e. the unaccelerated reference. risc0-crypto picks a
+// 256/384/4096-bit modmul backend based on `modulus.len()`.
+//
+// inputs are a real on-chain 256-bit modular inverse via Fermat's little
+// theorem in the BN254 scalar field, captured from
+// tx 0x20470fa1df545eb99bc9257e63121ca24ceec1c726c0118d9a5fb89613322fdd
+// (modulus = BN254 Fr prime, exp = modulus - 2).
+//
+// the timed region includes all parsing from raw bytes.
+
+const MODEXP_BASE: [u8; 32] =
+    hex!("2517fe308401b1210b8dd1d6fedc9f6fc7f55b92d4308c42ae72d8b826b858a1");
+const MODEXP_EXP: [u8; 32] =
+    hex!("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593efffffff");
+const MODEXP_MOD: [u8; 32] =
+    hex!("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
+
+/// Modular exponentiation via risc0-crypto (revm-precompile interface).
+fn modexp_risc0(base: &[u8], exp: &[u8], modulus: &[u8]) -> alloc::vec::Vec<u8> {
+    use alloc::{vec, vec::Vec};
+    use risc0_crypto::{
+        BigInt,
+        modexp::{self, BitAccess},
+    };
+
+    /// `BitAccess` adapter over a big-endian byte slice, mirroring revm's
+    /// default modexp behaviour for arbitrarily-long exponents.
+    struct ByteExp<'a>(&'a [u8]);
+    impl BitAccess for ByteExp<'_> {
+        #[inline]
+        fn bits(&self) -> usize {
+            self.0
+                .iter()
+                .position(|&b| b != 0)
+                .map_or(0, |i| (self.0.len() - i) * 8 - self.0[i].leading_zeros() as usize)
+        }
+        #[inline]
+        fn bit(&self, i: usize) -> bool {
+            let byte_offset = i / 8;
+            if byte_offset >= self.0.len() {
+                return false;
+            }
+            self.0[self.0.len() - 1 - byte_offset] & (1 << (i % 8)) != 0
+        }
+    }
+
+    // 256-bit backend: 8x u32 limbs.
+    if base.len() > 32 || modulus.len() > 32 {
+        return Vec::new();
+    }
+    let base_bi = BigInt::<8>::from_be_bytes(base);
+    let mod_bi = BigInt::<8>::from_be_bytes(modulus);
+    if mod_bi.is_zero() {
+        return vec![0u8; modulus.len()];
+    }
+
+    let result = modexp::modexp::<8>(&base_bi, &ByteExp(exp), &mod_bi);
+
+    let mut full = [0u8; 32];
+    result.write_be_bytes(&mut full);
+    full[32 - modulus.len()..].to_vec()
+}
+
+/// Modular exponentiation via aurora-engine-modexp, matching revm's
+/// `DefaultCrypto::modexp` when the `gmp` feature is disabled.
+fn modexp_default(base: &[u8], exp: &[u8], modulus: &[u8]) -> alloc::vec::Vec<u8> {
+    aurora_engine_modexp::modexp(base, exp, modulus)
+}
+
+fn bench_modexp() {
+    env::log("cycle-start: modexp/256bit/risc0-crypto");
+    let a = modexp_risc0(black_box(&MODEXP_BASE), black_box(&MODEXP_EXP), black_box(&MODEXP_MOD));
+    black_box(&a);
+    env::log("cycle-end: modexp/256bit/risc0-crypto");
+
+    env::log("cycle-start: modexp/256bit/aurora");
+    let b = modexp_default(black_box(&MODEXP_BASE), black_box(&MODEXP_EXP), black_box(&MODEXP_MOD));
+    black_box(&b);
+    env::log("cycle-end: modexp/256bit/aurora");
+
+    assert_eq!(a, b, "modexp implementations disagree");
+}
+
+// -- SHA-256 (precompile 0x02): risc0-crypto vs sha2 --
+//
+// both implementations use the revm-precompile Crypto interface:
+//   fn sha256(input: &[u8]) -> [u8; 32]
+//
+// risc0-crypto wraps risc0-zkp's zkVM-accelerated `Sha256` (the same impl revm
+// would dispatch to from a `R0vmCrypto::sha256` adapter). The sha2 crate is
+// patched to the risc0 fork, so it uses the same syscall under the hood - this
+// benchmark measures the per-call overhead of each entry path.
+//
+// the timed region includes all parsing.
+
+// real 64-byte input from a recent mainnet sha256 precompile call
+// (tx 0xa432b9491df7f18ad11ff5b9b6f843d184b3e1d395df738e5cd4331e11e06177).
+// 64 bytes is by far the most common length on mainnet (~75x the runner-up,
+// per the 0x02 trace distribution): it covers the typical "hash two 32-byte
+// values" pattern (Merkle steps, hash chains, etc.).
+const SHA256_INPUT: [u8; 64] = hex!(
+    "e19cdf9a2c41c77f70c48eab0b237fa254343f846cc40f8824db7be77e52aede"
+    "010000000000000000000000410a22b5c662b9e3a03dca5672c06ac8f6506b36"
+);
+
+/// SHA-256 via risc0-crypto / risc0-zkp (revm-precompile interface).
+fn sha256_risc0(input: &[u8]) -> [u8; 32] {
+    use risc0_zkp::core::hash::sha::{Impl, Sha256};
+    (*Impl::hash_bytes(input)).into()
+}
+
+/// SHA-256 via the sha2 crate (revm-precompile interface), matching revm's
+/// default `DefaultCrypto::sha256`.
+fn sha256_sha2(input: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(input).into()
+}
+
+fn bench_sha256() {
+    env::log("cycle-start: sha256/64B/risc0-crypto");
+    let a = sha256_risc0(black_box(&SHA256_INPUT));
+    black_box(&a);
+    env::log("cycle-end: sha256/64B/risc0-crypto");
+
+    env::log("cycle-start: sha256/64B/sha2");
+    let b = sha256_sha2(black_box(&SHA256_INPUT));
+    black_box(&b);
+    env::log("cycle-end: sha256/64B/sha2");
+
+    assert_eq!(a, b, "sha256 implementations disagree");
 }
