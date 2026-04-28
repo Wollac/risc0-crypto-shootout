@@ -22,11 +22,35 @@ library. The exception is `modexp`: revm's `DefaultCrypto::modexp` falls through
 to `aurora-engine-modexp`, which has no risc0 fork — it stands in as the
 unaccelerated reference.
 
+## Latest results
+
+Refreshed by [`.github/workflows/bench.yml`](.github/workflows/bench.yml) on
+every push to `main`, weekly, and on manual dispatch. The workflow opens (or
+force-updates) a single `ci/bench-update` PR; merge it to land the new numbers.
+`Ratio` is `Counterpart ÷ risc0-crypto` — larger means risc0-crypto is faster.
+
+<!-- BENCH-START -->
+| Benchmark | risc0-crypto | Counterpart | Library | Ratio |
+|-----------|-------------:|------------:|---------|------:|
+| `ecrecover` | 120,300 | 569,207 | `k256` | 4.73× |
+| `p256verify` | 82,667 | 192,713 | `p256` | 2.33× |
+| `eip196/add` | 2,282 | 9,552 | `substrate-bn` | 4.19× |
+| `eip196/mul` | 68,496 | 1,302,678 | `substrate-bn` | 19.02× |
+| `eip2537/add` | 3,394 | 13,625 | `blst` | 4.01× |
+| `eip2537/msm/1` | 189,395 | 1,316,098 | `blst` | 6.95× |
+| `eip2537/msm/128` | 19,412,368 | 69,095,044 | `blst` | 3.56× |
+| `modexp/256bit` | 30,566 | 851,596 | `aurora` | 27.86× |
+| `sha256/64B` | 535 | 1,152 | `sha2` | 2.15× |
+
+_risc0-crypto rev [`4042fe89`](https://github.com/boundless-xyz/risc0-crypto/commit/4042fe8933cd71b36e0969c6e7d52c994cc43f86)_
+<!-- BENCH-END -->
+
 ## Run
 
 ```bash
 cargo run --release
 cargo run --release -- --json results.json
+cargo run --release -- --markdown results.md
 ```
 
 Requires the `rzup`-managed `r0vm` toolchain (see the risc0-crypto README for

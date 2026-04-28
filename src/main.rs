@@ -3,7 +3,7 @@ use colored::Colorize;
 use regex::Regex;
 use risc0_crypto_shootout::GUEST_ELF;
 use risc0_zkvm::{ExecutorEnv, default_executor};
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, fmt::Write as _, sync::LazyLock};
 use tabular::{Row, Table};
 use thousands::Separable;
 
@@ -14,6 +14,25 @@ use thousands::Separable;
 static CYCLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"R0VM\[(\d+)\] cycle-(start|end): (.+)").unwrap());
 
+/// The reference implementation; counterpart libraries are paired against this.
+const REFERENCE: &str = "risc0-crypto";
+
+/// Embedded at compile time so we can report the resolved `risc0-crypto` git rev.
+/// `Cargo.lock` is canonical (cargo-generated, not user-formatted) so the format is stable.
+const GUEST_CARGO_LOCK: &str = include_str!("../guest/Cargo.lock");
+
+/// Extract `(repo_url, rev)` for the `risc0-crypto` dependency.
+fn risc0_crypto_source() -> Option<(&'static str, &'static str)> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r##"name = "risc0-crypto"\nversion = "[^"]*"\nsource = "git\+([^?]+)\?rev=([^#"]+)#"##,
+        )
+        .unwrap()
+    });
+    let caps = RE.captures(GUEST_CARGO_LOCK)?;
+    Some((caps.get(1)?.as_str(), caps.get(2)?.as_str()))
+}
+
 #[derive(serde::Serialize)]
 struct BenchResult {
     name: String,
@@ -22,7 +41,8 @@ struct BenchResult {
 }
 
 fn main() -> anyhow::Result<()> {
-    let json_path = parse_json_flag();
+    let json_path = parse_flag("--json");
+    let markdown_path = parse_flag("--markdown");
 
     let mut out = Vec::new();
     let env = ExecutorEnv::builder().stdout(&mut out).build()?;
@@ -39,13 +59,19 @@ fn main() -> anyhow::Result<()> {
         println!("\nJSON results written to {path}");
     }
 
+    if let Some(path) = markdown_path {
+        write_markdown(&results, &path)?;
+        println!("Markdown results written to {path}");
+    }
+
     Ok(())
 }
 
-/// Parse `--json <path>` from command-line arguments.
-fn parse_json_flag() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    args.windows(2).find(|w| w[0] == "--json").map(|w| w[1].clone())
+/// Parse `--<name> <value>` from command-line arguments.
+fn parse_flag(name: &str) -> Option<String> {
+    let mut args = std::env::args().skip_while(|a| a != name);
+    args.next()?;
+    args.next()
 }
 
 /// Splits a topic like `"eip2537/msm/128*10"` into `("eip2537/msm/128", 10)`.
@@ -116,5 +142,49 @@ fn print_table(results: &[BenchResult]) {
 fn write_json(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(results)?;
     std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Write a head-to-head markdown comparison: risc0-crypto vs counterpart per benchmark.
+fn write_markdown(results: &[BenchResult], path: &str) -> anyhow::Result<()> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut groups: HashMap<&str, Vec<(&str, u64)>> = HashMap::new();
+
+    for r in results {
+        let Some((benchmark, impl_name)) = r.name.rsplit_once('/') else { continue };
+        groups
+            .entry(benchmark)
+            .or_insert_with(|| {
+                order.push(benchmark);
+                Vec::new()
+            })
+            .push((impl_name, r.value));
+    }
+
+    let mut md = String::new();
+    writeln!(md, "| Benchmark | risc0-crypto | Counterpart | Library | Ratio |")?;
+    writeln!(md, "|-----------|-------------:|------------:|---------|------:|")?;
+
+    for benchmark in &order {
+        let entries = &groups[benchmark];
+        let Some(&(_, ours)) = entries.iter().find(|(k, _)| *k == REFERENCE) else { continue };
+        let Some(&(lib, theirs)) = entries.iter().find(|(k, _)| *k != REFERENCE) else { continue };
+        let ratio = theirs as f64 / ours as f64;
+        writeln!(
+            md,
+            "| `{benchmark}` | {} | {} | `{lib}` | {ratio:.2}× |",
+            ours.separate_with_commas(),
+            theirs.separate_with_commas(),
+        )?;
+    }
+
+    if let Some((repo, rev)) = risc0_crypto_source() {
+        let short = rev.get(..8).unwrap_or(rev);
+        let repo_trimmed = repo.trim_end_matches(".git");
+        writeln!(md)?;
+        writeln!(md, "_risc0-crypto rev [`{short}`]({repo_trimmed}/commit/{rev})_")?;
+    }
+
+    std::fs::write(path, md)?;
     Ok(())
 }
