@@ -37,8 +37,8 @@ force-updates) a single `ci/bench-update` PR; merge it to land the new numbers.
 | `eip196/add` | 2,282 | 9,552 | `substrate-bn` | 4.19× |
 | `eip196/mul` | 68,496 | 1,302,678 | `substrate-bn` | 19.02× |
 | `eip2537/add` | 3,394 | 13,625 | `blst` | 4.01× |
-| `eip2537/msm/1` | 189,395 | 1,316,098 | `blst` | 6.95× |
-| `eip2537/msm/128` | 19,412,368 | 69,095,044 | `blst` | 3.56× |
+| `eip2537/msm/1` | 189,395 | 1,316,125 | `blst` | 6.95× |
+| `eip2537/msm/128` | 19,412,368 | 69,095,071 | `blst` | 3.56× |
 | `modexp/256bit` | 30,566 | 851,596 | `aurora` | 27.86× |
 | `sha256/64B` | 535 | 1,152 | `sha2` | 2.15× |
 
