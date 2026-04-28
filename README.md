@@ -15,10 +15,11 @@ interface against both implementations and asserts they agree on the result.
 | `modexp/256bit`  | EIP-198 modexp    | `aurora-engine-modexp` |
 | `sha256/64B`     | risc0-zkp SHA-256 | `sha2`                 |
 
-The counterparts are pulled from the [risc0 RustCrypto/blst forks][forks] via
-`[patch.crates-io]`, so the numbers reflect each library's best-tuned zkVM build.
-The exception is `modexp`: revm's `DefaultCrypto::modexp` falls through to
-`aurora-engine-modexp`, which has no risc0 fork - it stands in as the
+Each counterpart is wired in through `[patch.crates-io]` to its [risc0 fork][forks]
+(zkVM-accelerated builds of `k256`, `p256`, `sha2`, `substrate-bn`, and `blst`),
+so the numbers compare risc0-crypto against the best-tuned zkVM build of each
+library. The exception is `modexp`: revm's `DefaultCrypto::modexp` falls through
+to `aurora-engine-modexp`, which has no risc0 fork — it stands in as the
 unaccelerated reference.
 
 ## Run
