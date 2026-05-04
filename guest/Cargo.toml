@@ -10,7 +10,7 @@ codegen-units = 1
 lto = "fat"
 
 [dependencies]
-risc0-crypto = { git = "https://github.com/boundless-xyz/risc0-crypto.git", rev = "4042fe8933cd71b36e0969c6e7d52c994cc43f86" }
+risc0-crypto = { git = "https://github.com/boundless-xyz/risc0-crypto.git", tag = "v0.1.0-rc.1" }
 risc0-zkp = { version = "3.0.4", default-features = false }
 risc0-zkvm = "3.0"
 k256 = { version = "=0.13.4", default-features = false, features = ["ecdsa"] }
